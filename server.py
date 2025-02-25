@@ -1,3 +1,4 @@
+import functools
 import json
 import os
 import random
@@ -6,19 +7,12 @@ import ipaddress
 from fcntl import ioctl
 from base64 import b64encode, b64decode
 import asyncio
+from typing import Any, Tuple, Union
+
+from websockets import ServerConnection
 from websockets.asyncio.server import serve
 from Crypto.Cipher import AES
 
-ws_to_ip = dict()
-ip_to_ws = dict()
-ws_to_aes = dict()
-
-tunfd = None
-
-ip_net = ipaddress.ip_network('192.168.100.0/24')
-server_ip = ipaddress.ip_address('192.168.100.1')
-
-key = b"BTC{S3cur3__VPN}"
 
 
 # assign next IP address
@@ -35,7 +29,7 @@ def get_next_aes():
     return AES.new(key, AES.MODE_CFB)
 
 
-def open_tun(tun_name: str):
+def open_tun(tun_name: bytes) -> Any:
     tun = open("/dev/net/tun", "r+b", buffering=0)
     LINUX_IFF_TUN = 0x0001
     LINUX_IFF_NO_PI = 0x1000
@@ -46,7 +40,7 @@ def open_tun(tun_name: str):
     return tun
 
 
-def read_ip_header(pkg):
+def read_ip_header(pkg: bytes) -> Tuple[Union[None, ipaddress.IPv4Address], Union[None, ipaddress.IPv4Address]]:
     if len(pkg) < 20:
         return None, None
     iphdr = unpack(">BBHHHBBHII", pkg[0:20])
@@ -57,9 +51,8 @@ def read_ip_header(pkg):
     return ipaddress.ip_address(iphdr[8]), ipaddress.ip_address(iphdr[9])
 
 
-def tun_reader():
-    global tunfd
-    pkg = tunfd.read(1500)  # mtu
+def tun_reader(tun_fd: Any) -> None:
+    pkg = tun_fd.read(1500)  # mtu
     src_ip, dst_ip = read_ip_header(pkg)
     if src_ip is None or dst_ip is None:
         return
@@ -69,13 +62,13 @@ def tun_reader():
     asyncio.get_event_loop().create_task(send_package(ws, pkg))
 
 
-async def send_package(ws, pkg):
+async def send_package(ws: ServerConnection, pkg: bytes) -> None:
     encrypted_pkg = ws_to_aes[ws][0].encrypt(pkg)
     b64_pkg = b64encode(encrypted_pkg).decode("utf-8")
     await ws.send(json.dumps({"pkg": b64_pkg}))
 
 
-async def ws_handler(ws):
+async def client_handler(ws: ServerConnection, tun_fd: Any):
     new_ip = next_ip_address()
     if new_ip is None:
         await ws.send(json.dumps({"error": "ip address failed"}))
@@ -103,33 +96,44 @@ async def ws_handler(ws):
             if src != new_ip:
                 continue
             print("Writing pkg from ", src, " to ", dst)
-            tunfd.write(decrypted_b64)
+            tun_fd.write(decrypted_b64)
     except Exception as e:
-        print("Client", new_ip, " disconnected due to error", e)
+        print("Client", new_ip, " has error", e)
+    finally:
+        print("Client", new_ip, "was disconnected")
     task.cancel()
     del ws_to_ip[ws]
     del ip_to_ws[new_ip]
     del ws_to_aes[ws]
 
 
-async def tick_timer(ws):
-    await asyncio.sleep(1)
+async def tick_timer(ws: ServerConnection):
+    await asyncio.sleep(1) # initial sleep
     while True:
-        await asyncio.sleep(random.randint(1, 10) / 10.0)  # 0.1-10 sec
+        await asyncio.sleep(random.randint(1, 10) / 10.0)  # 0.1-1 sec
         fake_pkg = b"0" + random.randbytes(random.randint(31, 1499))
         encrypted_pkg = ws_to_aes[ws][0].encrypt(fake_pkg)
         await ws.send(json.dumps({"pkg": b64encode(encrypted_pkg).decode("utf-8")}))
 
 
-async def main():
-    global tunfd
-    asyncio.get_event_loop().add_reader(tunfd, tun_reader)
-    async with serve(ws_handler, "0.0.0.0", 8765) as server:
+async def main(tun_fd: Any):
+    asyncio.get_event_loop().add_reader(tun_fd, tun_reader, tun_fd)
+    handler = functools.partial(client_handler, tun_fd=tun_fd)
+    async with serve(handler, "0.0.0.0", 8765) as server:
         await server.serve_forever()
 
 
+key = b"BTC{S3cur3__VPN}"
+interface = b"btc_vpn0"
+ws_to_ip = dict()
+ip_to_ws = dict()
+ws_to_aes = dict()
+
+ip_net = ipaddress.ip_network('192.168.100.0/24')
+server_ip = ipaddress.ip_address('192.168.100.1')
+
 if __name__ == '__main__':
-    tunfd = open_tun(b"btcvpn0")
-    os.system("sudo ip l set btcvpn0 up")
-    os.system(f"sudo ip a a dev btcvpn0 {server_ip}/24")
-    asyncio.run(main())
+    tun = open_tun(interface)
+    os.system("sudo ip l set btc_vpn0 up")
+    os.system(f"sudo ip a a dev btc_vpn0 {server_ip}/24")
+    asyncio.run(main(tun))
