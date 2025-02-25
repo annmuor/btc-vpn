@@ -1,4 +1,5 @@
 import json
+import os
 import random
 from struct import pack, unpack
 import ipaddress
@@ -96,6 +97,12 @@ async def ws_handler(ws):
                 continue
             decoded_b64 = b64decode(json_msg['pkg'])
             decrypted_b64 = ws_to_aes[ws][1].decrypt(decoded_b64)
+            src, dst = read_ip_header(decrypted_b64)
+            if src is None or dst is None:
+                continue
+            if src != new_ip:
+                continue
+            print("Writing pkg from ", src, " to ", dst)
             tunfd.write(decrypted_b64)
     except Exception as e:
         print("Client", new_ip, " disconnected due to error", e)
@@ -116,11 +123,13 @@ async def tick_timer(ws):
 
 async def main():
     global tunfd
-    tunfd = open_tun(b"btcvpn0")
     asyncio.get_event_loop().add_reader(tunfd, tun_reader)
-    async with serve(ws_handler, "localhost", 8765) as server:
+    async with serve(ws_handler, "0.0.0.0", 8765) as server:
         await server.serve_forever()
 
 
 if __name__ == '__main__':
+    tunfd = open_tun(b"btcvpn0")
+    os.system("sudo ip l set btcvpn0 up")
+    os.system(f"sudo ip a a dev btcvpn0 {server_ip}/24")
     asyncio.run(main())
