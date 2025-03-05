@@ -13,7 +13,7 @@ Feel free to look into the code and understand the idea.
 - Uses HTTP + WebSocket as a transport layer
 - Encrypts everything in AES (CFB mode, IVs are provided on the start)
 - Provides fake messages to bypass traffic pattern detection
-- Works with tun (Linux). Make OS X example on your own please
+- Works with tun (Linux). Code OS X example on your own please. Utun [code sample](https://gist.github.com/whiler/295113850bd55ed4f4bf898124abe4a8)
 
 ## Client
 
